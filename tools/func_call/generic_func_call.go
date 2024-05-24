@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/invopop/jsonschema"
-	"reflect"
 )
 
 type GenericFuncCall struct {
@@ -33,47 +32,34 @@ func (g GenericFuncCall) InputArgsSchema() json.RawMessage {
 
 // NewGenericFuncCallByPlainFunc generate generic func by plain func
 // input func should be a func(ctx context.Context, req ReqType) (rsp rspType, error)
-func NewGenericFuncCallByPlainFunc(name, desc string, f interface{}) (*GenericFuncCall, error) {
+func NewGenericFuncCallByPlainFunc[T any, S any](name, desc string, f func(ctx context.Context, req T) (S, error)) (*GenericFuncCall, error) {
 	funcCall := &GenericFuncCall{
 		name:        name,
 		description: desc,
 	}
 
-	// valid f is a func
-	if reflect.TypeOf(f).Kind() != reflect.Func {
-		return nil, fmt.Errorf("f should be a func")
-	}
-
-	// valid f has 2 input params
-	if reflect.TypeOf(f).NumIn() != 2 {
-		return nil, fmt.Errorf("f should have 2 input params")
-	}
-
-	// valid f has 2 output params
-	if reflect.TypeOf(f).NumOut() != 2 {
-		return nil, fmt.Errorf("f should have 2 output params")
-	}
-
-	// valid f has 1st input param is context.Context
-	if reflect.TypeOf(f).In(0) != reflect.TypeOf(context.Background()) {
-		return nil, fmt.Errorf("f should have 1st input param is context.Context")
-	}
-
 	funcCall.fn = func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
-		req := reflect.New(reflect.TypeOf(f).In(1)).Interface()
-		err := json.Unmarshal(input, req)
+		var req T
+		err := json.Unmarshal(input, &req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to unmarshal input: %w", err)
 		}
-		ret := reflect.ValueOf(f).Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(req).Elem()})
-		if ret[1].IsNil() {
-			return json.Marshal(ret[0].Interface())
+
+		res, err := f(ctx, req)
+		if err != nil {
+			return nil, err
 		}
-		return nil, ret[1].Interface().(error)
+
+		output, err := json.Marshal(res)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal output: %w", err)
+		}
+
+		return output, nil
 	}
 
 	// generate json schema
-	schema := jsonschema.Reflect(reflect.New(reflect.TypeOf(f).In(1)).Interface())
+	schema := jsonschema.Reflect(new(T))
 	inputArgsSchema, err := json.MarshalIndent(schema, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal json schema: %w", err)
